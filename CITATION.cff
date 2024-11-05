@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Anton"
+  given-names: "Olsson"
+title: "DTA400-Simulation"
+version: 1.0.0
+doi: 10.5281/zenodo.1234
+date-released: 2024-11-05
+url: "https://github.com/DTA400-course/DTA400-Simulation"
