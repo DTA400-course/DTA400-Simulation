@@ -16,7 +16,6 @@ DRIVE_TIME = 0.5  # Tiden det tar för en bil att köra genom korsningen (sekund
 QUEUE_THRESHOLD = THRESHOLD_PICK  # Tröskel för att växla grönljus
 INITIAL_CARS = 1  # Antal initiala bilar
 
-
 # Bilnumrering med itertools
 car_id_counter = itertools.count(1)
 
@@ -31,13 +30,14 @@ class TrafficLight:
 
         # Starta trafikljuset som grönt för NS
         self.env.process(self.green_light_duration(GREEN_TIME_NS))
+        
+        # Start a process to record queue length periodically
+        self.env.process(self.record_queue_length())
 
     def run(self):
         while True:
             # Kontrollera köer och växla ljus vid behov
             self.check_queues()
-
-            # Vänta en sekund innan nästa cykel
             yield self.env.timeout(1)
 
     def check_queues(self):
@@ -59,65 +59,61 @@ class TrafficLight:
         yield self.env.timeout(duration)
         yield self.env.timeout(RED_TIME)  # Röd ljus tid
 
+    def record_queue_length(self):
+        while True:
+            # Record the total length of all queues
+            total_queue_length = len(self.queue_north) + len(self.queue_east) + len(self.queue_south) + len(self.queue_west)
+            stats['queue_lengths'].append(total_queue_length)
+            yield self.env.timeout(1)  # Record queue length every second
+
 class Car:
     def __init__(self, env, car_id, traffic_light, direction, stats, road):
         self.env = env
-        self.car_id = car_id  # Unik identifierare för bilen
+        self.car_id = car_id
         self.traffic_light = traffic_light
         self.direction = direction
         self.wait_time = 0
-        self.queue_time = 0  # Tid i kön
-        self.stats = stats  # Referens till statistikobjektet
-        self.arrival_time = None  # Ankomsttid
-        self.departure_time = None  # Avgångstid
-        self.road = road  # Referens till vägen
+        self.queue_time = 0
+        self.stats = stats
+        self.arrival_time = None
+        self.departure_time = None
+        self.road = road
 
     def drive(self):
-        self.arrival_time = self.env.now  # Registrera ankomsttid
-        yield self.env.timeout(0.5)  # Ingen väntan för de första bilarna
+        self.arrival_time = self.env.now
+        yield self.env.timeout(0.5)
 
-        # Vänta på trafikljuset och lägg till bilen i rätt kö
+        # Add car to the correct queue based on direction and wait for green light
         if self.direction == 'NORTH':
-            self.traffic_light.queue_north.append(self)  # Lägg till bilen i nord-kön
-
-            # Kolla om bilen ska passera
+            self.traffic_light.queue_north.append(self)
             while self.traffic_light.current_state != 'NS':
-                yield self.env.timeout(1)  # Vänta på grönt ljus
+                yield self.env.timeout(1)
             yield self.env.process(self.cross_intersection())
-
         elif self.direction == 'EAST':
-            self.traffic_light.queue_east.append(self)  # Lägg till bilen i öst-kön
-
+            self.traffic_light.queue_east.append(self)
             while self.traffic_light.current_state != 'EW':
                 yield self.env.timeout(1)
             yield self.env.process(self.cross_intersection())
-
         elif self.direction == 'SOUTH':
-            self.traffic_light.queue_south.append(self)  # Lägg till bilen i syd-kön
-
+            self.traffic_light.queue_south.append(self)
             while self.traffic_light.current_state != 'NS':
                 yield self.env.timeout(1)
             yield self.env.process(self.cross_intersection())
-
         elif self.direction == 'WEST':
-            self.traffic_light.queue_west.append(self)  # Lägg till bilen i väst-kön
-
+            self.traffic_light.queue_west.append(self)
             while self.traffic_light.current_state != 'EW':
                 yield self.env.timeout(1)
             yield self.env.process(self.cross_intersection())
 
     def cross_intersection(self):
-        # Väntar på vägen innan den passerar korsningen
         with self.road.request() as request:
-            yield request  # Vänta på att vägen är tillgänglig
-            yield self.env.timeout(DRIVE_TIME)  # Tid för att köra genom korsningen
+            yield request
+            yield self.env.timeout(DRIVE_TIME)
 
-        # Registrera avgångstid och kötid
-        self.departure_time = self.env.now  # Registrera avgångstid
-        self.queue_time = self.departure_time - self.arrival_time  # Total kötid
-        self.wait_time = self.queue_time + DRIVE_TIME  # Total väntetid (inklusiv kötid och körtid)
+        self.departure_time = self.env.now
+        self.queue_time = self.departure_time - self.arrival_time
+        self.wait_time = self.queue_time + DRIVE_TIME
 
-        # Ta bort bilen från kön
         if self.direction == 'NORTH':
             self.traffic_light.queue_north.remove(self)
         elif self.direction == 'EAST':
@@ -127,50 +123,43 @@ class Car:
         elif self.direction == 'WEST':
             self.traffic_light.queue_west.remove(self)
 
-        # Spara väntetid och kötid i statistik
         self.stats['total_wait_time'] += self.wait_time
         self.stats['queue_times'].append(self.queue_time)
-        self.stats['car_count'] += 1  # Öka antalet bilar
+        self.stats['car_count'] += 1
 
-
-# Setup-process för att skapa bilar och trafikljus
 def setup(env, initial_cars, arrival_mean):
     global stats
     traffic_light = TrafficLight(env)
-    road = simpy.Resource(env, capacity=2)  # Vägen kan bara ta en bil åt gången
-    env.process(traffic_light.run())  # Starta trafikljusets process
+    road = simpy.Resource(env, capacity=2)
+    env.process(traffic_light.run())
 
-    # Statistik för väntetider
     stats = {
         'total_wait_time': 0,
         'car_count': 0,
-        'wait_times': [],  # Lista för att lagra väntetider
-        'queue_times': []   # Lista för att lagra kötid
+        'wait_times': [],
+        'queue_times': [],
+        'queue_lengths': []  # List to store queue length values over time
     }
 
-    # Skapa initiala bilar
-    car_count = itertools.count()  # Täljare för bil-ID
+    car_count = itertools.count()
     for _ in range(initial_cars):
         env.process(Car(env, f'Car {next(car_count)}', traffic_light, 'NORTH', stats, road).drive())
 
-    # Skapa bilar under simulationstiden
     while True:
         yield env.timeout(random.expovariate(1.0 / arrival_mean))
         env.process(Car(env, f'Car {next(car_count)}', traffic_light, random.choice(['NORTH', 'EAST', 'SOUTH', 'WEST']), stats, road).drive())
 
-
-# Kör simuleringen 15 gånger och skriv ut resultaten för varje körning
 for i in range(RUN_TIMES):
     print(f"\n--- Simulering {i + 1} ---")
     env = simpy.Environment()
     env.process(setup(env, INITIAL_CARS, ARRIVAL_MEAN))
     env.run(until=SIMULATION_TIME)
 
-    # Beräkna och skriv ut medelväntetid och medelkötid
     if stats['car_count'] > 0:
         average_wait_time = stats['total_wait_time'] / stats['car_count']
         average_queue_time = sum(stats['queue_times']) / len(stats['queue_times']) if stats['queue_times'] else 0
-        print(f'Medelväntetid: {average_wait_time:.2f} sekunder')
+        average_queue_length = sum(stats['queue_lengths']) / len(stats['queue_lengths']) if stats['queue_lengths'] else 0
         print(f'Medelkötid: {average_queue_time:.2f} sekunder')
+        print(f'Medelkölängd: {average_queue_length:.2f} bilar')
     else:
         print("Inga bilar passerade korsningen.")
