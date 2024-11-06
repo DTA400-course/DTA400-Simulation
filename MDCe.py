@@ -14,13 +14,16 @@ ARRIVAL_MEAN = 1
 SIMULATION_TIME = 600   
 DRIVE_TIME = 0.5        
 
-
 class TrafficLight:
-    def __init__(self, env):
+    def __init__(self, env, stats):
         self.env = env
         self.state = 'GREEN'  # Startar med rött ljus
         self.queue_ns = 0   # Kö för nord-syd
         self.queue_ew = 0   # Kö för öst-väst
+        self.stats = stats  # Reference to stats for logging queue lengths
+
+        # Start a process to record queue length periodically
+        self.env.process(self.record_queue_length())
 
     def run(self):
         while True:
@@ -36,17 +39,22 @@ class TrafficLight:
             self.state = 'RED_EW'
             yield self.env.timeout(RED_TIME)
 
+    def record_queue_length(self):
+        while True:
+            # Record the total length of all queues
+            total_queue_length = self.queue_ns + self.queue_ew
+            self.stats['queue_lengths'].append(total_queue_length)
+            yield self.env.timeout(1)  # Record queue length every second
+
 class Road:
     def __init__(self, env, stats):
         self.env = env
         self.resource = simpy.Resource(env, capacity=1)  
-        self.usage_start_time = None  
         self.stats = stats
 
     def drive(self, car):
         with self.resource.request() as request:
             yield request  
-
             yield self.env.timeout(DRIVE_TIME)
 
 class Car:
@@ -69,7 +77,6 @@ class Car:
             while self.traffic_light.state != 'GREEN_NS':
                 yield self.env.timeout(1)
 
-        
             self.queue_time = self.env.now - start_queue_time
             yield from self.road.drive(self)
             self.traffic_light.queue_ns -= 1
@@ -102,11 +109,12 @@ for i in range(RUN_TIMES):
 
     stats = {
         'car_count': 0,
-        'queue_times': []  
+        'queue_times': [],
+        'queue_lengths': []  # List to store queue length values over time
     }
 
     env = simpy.Environment()
-    traffic_light = TrafficLight(env)
+    traffic_light = TrafficLight(env, stats)
     road = Road(env, stats)
     env.process(traffic_light.run())
     env.process(car_generator(env, traffic_light, road, stats))
@@ -115,7 +123,9 @@ for i in range(RUN_TIMES):
 
     if stats['car_count'] > 0:
         average_queue_time = sum(stats['queue_times']) / len(stats['queue_times'])
+        average_queue_length = sum(stats['queue_lengths']) / len(stats['queue_lengths']) if stats['queue_lengths'] else 0
         print(f'Antal bilar: {stats["car_count"]}')
         print(f'Medelkötid: {average_queue_time:.2f} sekunder')
+        print(f'Medelkölängd: {average_queue_length:.2f} bilar')
     else:
         print('Inga bilar har registrerat kötid.')
